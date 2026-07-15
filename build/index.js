@@ -639,24 +639,35 @@ async function make12306Request(url, scheme = new URLSearchParams(), headers = {
         return null;
     }
 }
-// Create server instance
-export const server = new McpServer({
-    name: '12306-mcp',
-    version: VERSION,
-    capabilities: {
-        resources: {},
-        tools: {},
-    },
-    instructions: '该服务主要用于帮助用户查询12306的车票信息、特定列车的经停站信息以及相关的车站信息。请仔细理解用户的意图，并按以下指引选择合适的接口：\n\n' +
-        '**原则：**\n' +
-        '*   **必要时追问**：如果用户信息不足以调用接口，请向用户追问缺失的信息。\n' +
-        '*   **尽量精确需求**：尽量利用筛选功能筛选用户需要的车票信息，从而简短上下文长度。\n\n' +
-        '请根据上述指引选择接口。',
+function createServer() {
+    return new McpServer({
+        name: '12306-mcp',
+        version: VERSION,
+    }, {
+        capabilities: {
+            resources: {},
+            tools: {},
+        },
+        instructions: '该服务主要用于帮助用户查询12306的车票信息、特定列车的经停站信息以及相关的车站信息。请仔细理解用户的意图，并按以下指引选择合适的接口：\n\n' +
+            '**原则：**\n' +
+            '*   **必要时追问**：如果用户信息不足以调用接口，请向用户追问缺失的信息。\n' +
+            '*   **尽量精确需求**：尽量利用筛选功能筛选用户需要的车票信息，从而简短上下文长度。\n\n' +
+            '请根据上述指引选择接口。',
+    });
+}
+export const server = createServer();
+const toolRegistrations = [];
+const registerTool = ((...args) => {
+    const registration = (target) => {
+        Reflect.apply(target.tool, target, args);
+    };
+    registration(server);
+    toolRegistrations.push(registration);
 });
 server.resource('stations', 'data://all-stations', async (uri) => ({
     contents: [{ uri: uri.href, text: JSON.stringify(STATIONS) }],
 }));
-server.tool('get-current-date', '获取当前日期，以上海时区（Asia/Shanghai, UTC+8）为准，返回格式为 "yyyy-MM-dd"。主要用于解析用户提到的相对日期（如“明天”、“下周三”），提供准确的日期输入。', {}, async () => {
+registerTool('get-current-date', '获取当前日期，以上海时区（Asia/Shanghai, UTC+8）为准，返回格式为 "yyyy-MM-dd"。主要用于解析用户提到的相对日期（如“明天”、“下周三”），提供准确的日期输入。', {}, async () => {
     try {
         const timeZone = 'Asia/Shanghai';
         const nowInShanghai = toZonedTime(new Date(), timeZone);
@@ -677,7 +688,7 @@ server.tool('get-current-date', '获取当前日期，以上海时区（Asia/Sha
         };
     }
 });
-server.tool('get-stations-code-in-city', '通过中文城市名查询该城市 **所有** 火车站的名称及其对应的 `station_code`，结果是一个包含多个车站信息的列表。', {
+registerTool('get-stations-code-in-city', '通过中文城市名查询该城市 **所有** 火车站的名称及其对应的 `station_code`，结果是一个包含多个车站信息的列表。', {
     city: z.string().describe('中文城市名称，例如："北京", "上海"'),
 }, async ({ city }) => {
     if (!(city in CITY_STATIONS)) {
@@ -691,7 +702,7 @@ server.tool('get-stations-code-in-city', '通过中文城市名查询该城市 *
         ],
     };
 });
-server.tool('get-station-code-of-citys', '通过中文城市名查询代表该城市的 `station_code`。', {
+registerTool('get-station-code-of-citys', '通过中文城市名查询代表该城市的 `station_code`。', {
     citys: z
         .string()
         .describe('要查询的城市，比如"北京"。若要查询多个城市，请用|分割，比如"北京|上海"。'),
@@ -709,7 +720,7 @@ server.tool('get-station-code-of-citys', '通过中文城市名查询代表该�
         content: [{ type: 'text', text: JSON.stringify(result) }],
     };
 });
-server.tool('get-station-code-by-names', '通过具体的中文车站名查询其 `station_code` 和车站名。', {
+registerTool('get-station-code-by-names', '通过具体的中文车站名查询其 `station_code` 和车站名。', {
     stationNames: z
         .string()
         .describe('具体的中文车站名称，例如："北京南", "上海虹桥"。若要查询多个站点，请用|分割，比如"北京南|上海虹桥"。'),
@@ -730,7 +741,7 @@ server.tool('get-station-code-by-names', '通过具体的中文车站名查询�
         content: [{ type: 'text', text: JSON.stringify(result) }],
     };
 });
-server.tool('get-station-by-telecode', '通过车站的 `station_telecode` 查询车站的详细信息，包括名称、拼音、所属城市等。此接口主要用于在已知 `telecode` 的情况下获取更完整的车站数据，或用于特殊查询及调试目的。一般用户对话流程中较少直接触发。', {
+registerTool('get-station-by-telecode', '通过车站的 `station_telecode` 查询车站的详细信息，包括名称、拼音、所属城市等。此接口主要用于在已知 `telecode` 的情况下获取更完整的车站数据，或用于特殊查询及调试目的。一般用户对话流程中较少直接触发。', {
     stationTelecode: z
         .string()
         .describe('车站的 `station_telecode` (3位字母编码)'),
@@ -749,7 +760,7 @@ server.tool('get-station-by-telecode', '通过车站的 `station_telecode` 查�
         ],
     };
 });
-server.tool('get-tickets', '查询12306余票信息。', {
+registerTool('get-tickets', '查询12306余票信息。', {
     date: z
         .string()
         .length(10)
@@ -903,7 +914,7 @@ server.tool('get-tickets', '查询12306余票信息。', {
 // isShowWZ=N&
 // purpose_codes=00&
 // channel=E  ?channel是什么用的
-server.tool('get-interline-tickets', '查询12306中转余票信息。尚且只支持查询前十条。', {
+registerTool('get-interline-tickets', '查询12306中转余票信息。尚且只支持查询前十条。', {
     date: z
         .string()
         .length(10)
@@ -1085,7 +1096,7 @@ server.tool('get-interline-tickets', '查询12306中转余票信息。尚且只�
         ],
     };
 });
-server.tool('get-train-route-stations', '查询特定列车车次在指定区间内的途径车站、到站时间、出发时间及停留时间等详细经停信息。当用户询问某趟具体列车的经停站时使用此接口。', {
+registerTool('get-train-route-stations', '查询特定列车车次在指定区间内的途径车站、到站时间、出发时间及停留时间等详细经停信息。当用户询问某趟具体列车的经停站时使用此接口。', {
     trainCode: z
         .string()
         .describe('要查询的车次 `train_code`，例如"G1033"。'),
@@ -1218,8 +1229,10 @@ program
                 host: options.host,
                 port: options.port,
                 // @ts-ignore
-                createMcpServer: async ({ headers }) => {
-                    return server;
+                createMcpServer: async () => {
+                    const httpServer = createServer();
+                    toolRegistrations.forEach((register) => register(httpServer));
+                    return httpServer;
                 },
             });
         }
