@@ -315,7 +315,7 @@ function parseTicketsInfo(ticketsData, map) {
         const durationMinutes = parseInt(ticket.lishi.split(':')[1]);
         const startDate = parse(ticket.start_train_date, 'yyyyMMdd', new Date());
         startDate.setHours(startHours, startMinutes);
-        const arriveDate = startDate;
+        const arriveDate = new Date(startDate);
         arriveDate.setHours(startHours + durationHours, startMinutes + durationMinutes);
         result.push({
             train_no: ticket.train_no,
@@ -454,7 +454,7 @@ function parseInterlinesTicketInfo(interlineTicketsData) {
         const durationMinutes = parseInt(interlineTicketData.lishi.split(':')[1]);
         const startDate = parse(interlineTicketData.start_train_date, 'yyyyMMdd', new Date());
         startDate.setHours(startHours, startMinutes);
-        const arriveDate = startDate;
+        const arriveDate = new Date(startDate);
         arriveDate.setHours(startHours + durationHours, startMinutes + durationMinutes);
         result.push({
             train_no: interlineTicketData.train_no,
