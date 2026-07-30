@@ -382,7 +382,7 @@ function parseTicketsInfo(
             new Date()
         );
         startDate.setHours(startHours, startMinutes);
-        const arriveDate = startDate;
+        const arriveDate = new Date(startDate);
         arriveDate.setHours(
             startHours + durationHours,
             startMinutes + durationMinutes
@@ -572,7 +572,7 @@ function parseInterlinesTicketInfo(
             new Date()
         );
         startDate.setHours(startHours, startMinutes);
-        const arriveDate = startDate;
+        const arriveDate = new Date(startDate);
         arriveDate.setHours(
             startHours + durationHours,
             startMinutes + durationMinutes
