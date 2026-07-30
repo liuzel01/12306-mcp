@@ -9,12 +9,14 @@ import { z } from 'zod';
 import { format, parse } from 'date-fns';
 import { toZonedTime } from 'date-fns-tz';
 import { StationDataKeys, TicketDataKeys, } from './types.js';
-const VERSION = '0.3.9';
+const VERSION = '0.3.10';
 const API_BASE = 'https://kyfw.12306.cn';
 const SEARCH_API_BASE = 'https://search.12306.cn';
 const WEB_URL = 'https://www.12306.cn/index/';
 const LCQUERY_INIT_URL = 'https://kyfw.12306.cn/otn/lcQuery/init';
+const TICKETS_QUERY_INIT_URL = 'https://kyfw.12306.cn/otn/leftTicket/init';
 const LCQUERY_PATH = await getLCQueryPath();
+const TICKETS_QUERY_PATH = await getTicketQueryPath();
 const MISSING_STATIONS = [
     {
         station_id: '@cdd',
@@ -846,7 +848,7 @@ registerTool('get-tickets', '查询12306余票信息。', {
         'leftTicketDTO.to_station': toStation,
         purpose_codes: 'ADULT',
     });
-    const queryUrl = `${API_BASE}/otn/leftTicket/query`;
+    const queryUrl = `${API_BASE}/otn/${TICKETS_QUERY_PATH}`;
     const cookies = await getCookie();
     if (cookies == null || Object.entries(cookies).length === 0) {
         return {
@@ -1200,6 +1202,17 @@ async function getStations() {
         }
     }
     return stationsData;
+}
+async function getTicketQueryPath() {
+    const html = await make12306Request(TICKETS_QUERY_INIT_URL, new URLSearchParams());
+    if (html == null) {
+        throw new Error('Error: get 12306 web page failed.');
+    }
+    const match = html.match(/ var CLeftTicketUrl = '(.+?)'/);
+    if (match == null) {
+        throw new Error('Error: get station name js file failed.');
+    }
+    return match[1];
 }
 async function getLCQueryPath() {
     const html = await make12306Request(LCQUERY_INIT_URL, new URLSearchParams(), {
