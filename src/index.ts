@@ -788,21 +788,37 @@ async function make12306Request<T>(
     }
 }
 
-// Create server instance
-export const server = new McpServer({
-    name: '12306-mcp',
-    version: VERSION,
-    capabilities: {
-        resources: {},
-        tools: {},
-    },
-    instructions:
-        '该服务主要用于帮助用户查询12306的车票信息、特定列车的经停站信息以及相关的车站信息。请仔细理解用户的意图，并按以下指引选择合适的接口：\n\n' +
-        '**原则：**\n' +
-        '*   **必要时追问**：如果用户信息不足以调用接口，请向用户追问缺失的信息。\n' +
-        '*   **尽量精确需求**：尽量利用筛选功能筛选用户需要的车票信息，从而简短上下文长度。\n\n' +
-        '请根据上述指引选择接口。',
-});
+function createServer(): McpServer {
+    return new McpServer(
+        {
+            name: '12306-mcp',
+            version: VERSION,
+        },
+        {
+            capabilities: {
+                resources: {},
+                tools: {},
+            },
+            instructions:
+                '该服务主要用于帮助用户查询12306的车票信息、特定列车的经停站信息以及相关的车站信息。请仔细理解用户的意图，并按以下指引选择合适的接口：\n\n' +
+                '**原则：**\n' +
+                '*   **必要时追问**：如果用户信息不足以调用接口，请向用户追问缺失的信息。\n' +
+                '*   **尽量精确需求**：尽量利用筛选功能筛选用户需要的车票信息，从而简短上下文长度。\n\n' +
+                '请根据上述指引选择接口。',
+        }
+    );
+}
+
+export const server = createServer();
+const toolRegistrations: Array<(target: McpServer) => void> = [];
+
+const registerTool = ((...args: unknown[]) => {
+    const registration = (target: McpServer) => {
+        Reflect.apply(target.tool, target, args);
+    };
+    registration(server);
+    toolRegistrations.push(registration);
+}) as McpServer['tool'];
 
 interface QueryResponse {
     [key: string]: any;
@@ -827,7 +843,7 @@ server.resource('stations', 'data://all-stations', async (uri) => ({
     contents: [{ uri: uri.href, text: JSON.stringify(STATIONS) }],
 }));
 
-server.tool(
+registerTool(
     'get-current-date',
     '获取当前日期，以上海时区（Asia/Shanghai, UTC+8）为准，返回格式为 "yyyy-MM-dd"。主要用于解析用户提到的相对日期（如“明天”、“下周三”），提供准确的日期输入。',
     {},
@@ -853,7 +869,7 @@ server.tool(
     }
 );
 
-server.tool(
+registerTool(
     'get-stations-code-in-city',
     '通过中文城市名查询该城市 **所有** 火车站的名称及其对应的 `station_code`，结果是一个包含多个车站信息的列表。',
     {
@@ -873,7 +889,7 @@ server.tool(
     }
 );
 
-server.tool(
+registerTool(
     'get-station-code-of-citys',
     '通过中文城市名查询代表该城市的 `station_code`。',
     {
@@ -898,7 +914,7 @@ server.tool(
     }
 );
 
-server.tool(
+registerTool(
     'get-station-code-by-names',
     '通过具体的中文车站名查询其 `station_code` 和车站名。',
     {
@@ -926,7 +942,7 @@ server.tool(
     }
 );
 
-server.tool(
+registerTool(
     'get-station-by-telecode',
     '通过车站的 `station_telecode` 查询车站的详细信息，包括名称、拼音、所属城市等。此接口主要用于在已知 `telecode` 的情况下获取更完整的车站数据，或用于特殊查询及调试目的。一般用户对话流程中较少直接触发。',
     {
@@ -951,7 +967,7 @@ server.tool(
     }
 );
 
-server.tool(
+registerTool(
     'get-tickets',
     '查询12306余票信息。',
     {
@@ -1164,7 +1180,7 @@ interface InterlineQueryResponse extends QueryResponse {
 // purpose_codes=00&
 // channel=E  ?channel是什么用的
 
-server.tool(
+registerTool(
     'get-interline-tickets',
     '查询12306中转余票信息。尚且只支持查询前十条。',
     {
@@ -1416,7 +1432,7 @@ interface TrainSearchResponse extends QueryResponse {
     errorMsg: string;
 }
 
-server.tool(
+registerTool(
     'get-train-route-stations',
     '查询特定列车车次在指定区间内的途径车站、到站时间、出发时间及停留时间等详细经停信息。当用户询问某趟具体列车的经停站时使用此接口。',
     {
@@ -1581,8 +1597,12 @@ program
                     host: options.host,
                     port: options.port,
                     // @ts-ignore
-                    createMcpServer: async ({ headers }) => {
-                        return server;
+                    createMcpServer: async () => {
+                        const httpServer = createServer();
+                        toolRegistrations.forEach((register) =>
+                            register(httpServer)
+                        );
+                        return httpServer;
                     },
                 });
             } else {
