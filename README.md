@@ -55,6 +55,11 @@ npx -y 12306-mcp
 npx -y 12306-mcp --port [端口号]
 ~~~
 
+### Runtime requirements
+
+The server requires Node.js 18 or newer. The `npm run debug` command uses
+MCP Inspector 2.0.0, which requires Node.js 22.19.0 or newer.
+
 ### MCP sever configuration
 
 ~~~json
