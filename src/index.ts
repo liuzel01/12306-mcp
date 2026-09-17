@@ -112,6 +112,7 @@ let lcQueryPath: string | null = null;
 let ticketsQueryPath: string | null = null;
 let initializationPromise: Promise<void> | null = null;
 let initializedAt = 0;
+let lastInitializationError: string | null = null;
 const INITIALIZATION_TTL_MS = 30 * 60 * 1000;
 
 function rebuildStationIndexes(): void {
@@ -776,6 +777,26 @@ function checkDate(date: string): boolean {
     return inputInShanghai >= nowInShanghai;
 }
 
+function isRealDate(date: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return false;
+    const [year, month, day] = date.split('-').map(Number);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    return (
+        parsed.getUTCFullYear() === year &&
+        parsed.getUTCMonth() === month - 1 &&
+        parsed.getUTCDate() === day
+    );
+}
+
+const dateSchema = z
+    .string()
+    .refine(isRealDate, '日期必须是有效的 yyyy-MM-dd 日期');
+const sortSchema = z
+    .enum(['', 'startTime', 'arriveTime', 'duration'])
+    .default('')
+    .optional();
+const formatSchema = z.enum(['text', 'csv', 'json']).default('text').optional();
+
 async function make12306Request<T>(
     url: string | URL,
     scheme: URLSearchParams = new URLSearchParams(),
@@ -836,6 +857,7 @@ async function ensureInitialized(): Promise<void> {
         ticketsQueryPath = loadedTicketsQueryPath;
         rebuildStationIndexes();
         initializedAt = Date.now();
+        lastInitializationError = null;
     })();
 
     try {
@@ -843,8 +865,26 @@ async function ensureInitialized(): Promise<void> {
     } catch (error) {
         initializationPromise = null;
         initializedAt = 0;
+        lastInitializationError =
+            error instanceof Error ? error.message : 'Unknown initialization error';
         throw error;
     }
+}
+
+function stationMatches(query: string, station: StationData): number {
+    const normalized = query.trim().toLowerCase().replace(/站$/, '');
+    const name = station.station_name.toLowerCase();
+    const pinyin = station.station_pinyin.toLowerCase();
+    const short = station.station_short.toLowerCase();
+    if (name === normalized) return 100;
+    if (short === normalized) return 90;
+    if (pinyin === normalized) return 85;
+    if (name.startsWith(normalized)) return 70;
+    if (pinyin.startsWith(normalized)) return 60;
+    if (short.startsWith(normalized)) return 50;
+    if (name.includes(normalized)) return 40;
+    if (pinyin.includes(normalized)) return 30;
+    return 0;
 }
 
 function createServer(): McpServer {
@@ -901,6 +941,72 @@ interface LeftTicketsQueryResponse extends QueryResponse {
 server.resource('stations', 'data://all-stations', async (uri) => ({
     contents: [{ uri: uri.href, text: JSON.stringify(STATIONS) }],
 }));
+
+registerTool(
+    'get-service-status',
+    '检查 12306 MCP 服务自身状态、初始化状态和车站数据缓存状态，不会触发上游查询。',
+    {},
+    async () => {
+        const now = Date.now();
+        const state =
+            initializedAt > 0 && now - initializedAt < INITIALIZATION_TTL_MS
+                ? 'ready'
+                : initializationPromise
+                  ? 'initializing'
+                  : lastInitializationError
+                    ? 'error'
+                    : 'not_initialized';
+        const result = {
+            serverVersion: VERSION,
+            initializationState: state,
+            stationCount: Object.keys(STATIONS).length,
+            cacheExpiresAt:
+                initializedAt > 0
+                    ? new Date(initializedAt + INITIALIZATION_TTL_MS).toISOString()
+                    : null,
+            lastInitializationError: lastInitializationError,
+            checkedAt: new Date(now).toISOString(),
+        };
+        return {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            structuredContent: result,
+        };
+    }
+);
+
+registerTool(
+    'search-stations',
+    '按中文名称、拼音或简称模糊搜索车站，返回有限数量的候选车站。存在多个候选时请让用户确认。',
+    {
+        query: z.string().trim().min(1).describe('车站名称、拼音或简称，例如“北京南”或“bjn”。'),
+        limit: z.number().int().min(1).max(20).default(10).optional(),
+    },
+    async ({ query, limit }) => {
+        await ensureInitialized();
+        const matches = Object.values(STATIONS)
+            .map((station) => ({ station, score: stationMatches(query, station) }))
+            .filter(({ score }) => score > 0)
+            .sort(
+                (a, b) =>
+                    b.score - a.score ||
+                    a.station.station_name.localeCompare(b.station.station_name)
+            )
+            .slice(0, limit)
+            .map(({ station, score }) => ({
+                stationName: station.station_name,
+                city: station.city,
+                stationCode: station.station_code,
+                pinyin: station.station_pinyin,
+                shortName: station.station_short,
+                matchScore: score,
+            }));
+        const result = { query, matches, requiresConfirmation: matches.length > 1 };
+        return {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            structuredContent: result,
+        };
+    }
+);
 
 registerTool(
     'get-current-date',
@@ -1034,9 +1140,7 @@ registerTool(
     'get-tickets',
     '查询12306余票信息。',
     {
-        date: z
-            .string()
-            .length(10)
+        date: dateSchema
             .describe(
                 '查询日期，格式为 "yyyy-MM-dd"。如果用户提供的是相对日期（如“明天”），请务必先调用 `get-current-date` 接口获取当前日期，并计算出目标日期。'
             ),
@@ -1073,10 +1177,7 @@ registerTool(
             .optional()
             .default(24)
             .describe('最迟出发时间（0-24），默认为24。'),
-        sortFlag: z
-            .string()
-            .optional()
-            .default('')
+        sortFlag: sortSchema
             .describe(
                 '排序方式，默认为空，即不排序。仅支持单一标识。可选标志：[startTime(出发时间从早到晚), arriveTime(抵达时间从早到晚), duration(历时从短到长)]'
             ),
@@ -1093,11 +1194,7 @@ registerTool(
             .optional()
             .default(0)
             .describe('返回的余票数量限制，默认为0，即不限制。'),
-        format: z
-            .string()
-            .regex(/^(text|csv|json)$/i)
-            .default('text')
-            .optional()
+        format: formatSchema
             .describe(
                 '返回结果格式，默认为text，建议使用text与csv。可选标志：[text, csv, json]'
             ),
@@ -1248,9 +1345,7 @@ registerTool(
     'get-interline-tickets',
     '查询12306中转余票信息。尚且只支持查询前十条。',
     {
-        date: z
-            .string()
-            .length(10)
+        date: dateSchema
             .describe(
                 '查询日期，格式为 "yyyy-MM-dd"。如果用户提供的是相对日期（如“明天”），请务必先调用 `get-current-date` 接口获取当前日期，并计算出目标日期。'
             ),
@@ -1299,10 +1394,7 @@ registerTool(
             .optional()
             .default(24)
             .describe('最迟出发时间（0-24），默认为24。'),
-        sortFlag: z
-            .string()
-            .optional()
-            .default('')
+        sortFlag: sortSchema
             .describe(
                 '排序方式，默认为空，即不排序。仅支持单一标识。可选标志：[startTime(出发时间从早到晚), arriveTime(抵达时间从早到晚), duration(历时从短到长)]'
             ),
@@ -1319,11 +1411,7 @@ registerTool(
             .optional()
             .default(10)
             .describe('返回的中转余票数量限制，默认为10。'),
-        format: z
-            .string()
-            .regex(/^(text|json)$/i)
-            .default('text')
-            .optional()
+        format: z.enum(['text', 'json']).default('text').optional()
             .describe(
                 '返回结果格式，默认为text，建议使用text。可选标志：[text, json]'
             ),
@@ -1504,17 +1592,11 @@ registerTool(
         trainCode: z
             .string()
             .describe('要查询的车次 `train_code`，例如"G1033"。'),
-        departDate: z
-            .string()
-            .length(10)
+        departDate: dateSchema
             .describe(
                 '列车出发的日期 (格式: yyyy-MM-dd)。如果用户提供的是相对日期，请务必先调用 `get-current-date` 解析。'
             ),
-        format: z
-            .string()
-            .regex(/^(text|json)$/i)
-            .default('text')
-            .optional()
+        format: z.enum(['text', 'json']).default('text').optional()
             .describe(
                 '返回结果格式，默认为text，建议使用text。可选标志：[text, json]'
             ),
