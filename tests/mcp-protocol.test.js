@@ -54,6 +54,7 @@ test('MCP starts before upstream initialization and exposes tools', async (t) =>
     assert.ok(tools.result.tools.some((tool) => tool.name === 'get-tickets'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'search-stations'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'get-service-status'));
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'get-ticket-summary'));
 
     const status = await callMcp('tools/call', 3, {
         name: 'get-service-status',

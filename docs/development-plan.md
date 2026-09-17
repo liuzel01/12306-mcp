@@ -8,6 +8,18 @@
 
 基线：远端 `origin/main`
 
+## 实施进度
+
+截至当前分支：
+
+- [x] P0：请求超时/有限重试、延迟初始化、30 分钟初始化缓存、MCP 协议 smoke test。
+- [x] P1：日期/排序/格式参数校验，`get-tickets` 结构化结果。
+- [x] P2：`search-stations` 模糊搜索接口。
+- [x] P3：`get-service-status` 状态接口。
+- [x] P4：已实现 `get-ticket-summary`；其他小型接口仍按需求选择。
+
+自动化验证：`npm test` 已通过；该测试覆盖 MCP 启动、初始化、工具发现、状态接口、日期工具和 `get-ticket-summary` 工具发现。`get-ticket-summary` 已额外通过真实 12306 上游 smoke test（北京至上海高铁）。
+
 ## 当前基线观察
 
 - `src/index.ts` 当前同时负责上游请求、车站数据加载、解析、格式化、MCP 工具注册和进程启动。

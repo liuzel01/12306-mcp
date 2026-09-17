@@ -1322,6 +1322,91 @@ registerTool(
     }
 );
 
+registerTool(
+    'get-ticket-summary',
+    '查询12306余票并返回适合对话展示的精简车次摘要，包含车次、时间、历时和主要座位余票。',
+    {
+        date: dateSchema.describe('查询日期，格式为 yyyy-MM-dd。'),
+        fromStation: z.string().describe('出发城市或车站名称，也可使用 station_code。'),
+        toStation: z.string().describe('到达城市或车站名称，也可使用 station_code。'),
+        trainFilterFlags: z
+            .string()
+            .regex(/^[GDZTKOFS]*$/)
+            .max(8)
+            .default('')
+            .optional()
+            .describe('车次筛选标志，例如 G 表示高铁/城际。'),
+        limit: z.number().int().min(1).max(50).default(10).optional(),
+    },
+    async ({ date, fromStation, toStation, trainFilterFlags, limit }) => {
+        await ensureInitialized();
+        if (!checkDate(date)) {
+            return { content: [{ type: 'text', text: 'Error: The date cannot be earlier than today.' }] };
+        }
+        const fromCode = parseStationCode(fromStation);
+        const toCode = parseStationCode(toStation);
+        if (!fromCode || !toCode) {
+            return { content: [{ type: 'text', text: 'Error: Station not found.' }] };
+        }
+        const queryParams = new URLSearchParams({
+            'leftTicketDTO.train_date': date,
+            'leftTicketDTO.from_station': fromCode,
+            'leftTicketDTO.to_station': toCode,
+            purpose_codes: 'ADULT',
+        });
+        const cookies = await getCookie();
+        if (!cookies || Object.keys(cookies).length === 0) {
+            return { content: [{ type: 'text', text: 'Error: get cookie failed. Check your network.' }] };
+        }
+        const queryResponse = await make12306Request<LeftTicketsQueryResponse>(
+            `${API_BASE}/otn/${ticketsQueryPath!}`,
+            queryParams,
+            { Cookie: formatCookies(cookies) }
+        );
+        if (!queryResponse || typeof queryResponse.data === 'string') {
+            return { content: [{ type: 'text', text: '很抱歉，未查到相关的列车余票。' }] };
+        }
+        let ticketsInfo: TicketInfo[];
+        try {
+            ticketsInfo = parseTicketsInfo(
+                parseTicketsData(queryResponse.data.result),
+                queryResponse.data.map
+            );
+        } catch {
+            return { content: [{ type: 'text', text: 'Error: parse tickets info failed.' }] };
+        }
+        const filtered = filterTicketsInfo(
+            ticketsInfo,
+            trainFilterFlags ?? '',
+            0,
+            24,
+            'startTime',
+            false,
+            limit
+        );
+        const summaries = filtered.map((ticket) => ({
+            trainCode: ticket.start_train_code,
+            fromStation: ticket.from_station,
+            toStation: ticket.to_station,
+            startDate: ticket.start_date,
+            startTime: ticket.start_time,
+            arriveDate: ticket.arrive_date,
+            arriveTime: ticket.arrive_time,
+            duration: ticket.lishi,
+            seats: ticket.prices
+                .filter((price) => price.num && !['无', '--'].includes(price.num))
+                .map((price) => ({ name: price.seat_name, available: price.num, price: price.price })),
+        }));
+        const text = summaries.length
+            ? summaries
+                  .map((item) => `${item.trainCode} ${item.startTime} -> ${item.arriveTime}（${item.duration}）`)
+                  .join('\n')
+            : '未查询到符合条件的车次。';
+        const result = { date, fromStation, toStation, trains: summaries };
+        return { content: [{ type: 'text', text }], structuredContent: result };
+    }
+);
+
 interface InterlineQueryResponse extends QueryResponse {
     data:
         | {
