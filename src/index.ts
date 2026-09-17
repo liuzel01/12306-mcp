@@ -498,6 +498,19 @@ function formatRouteStationsInfo(
     return result;
 }
 
+function calculateStopDuration(departure: string, nextArrival: string): string | null {
+    if (!/^\d{2}:\d{2}$/.test(departure) || !/^\d{2}:\d{2}$/.test(nextArrival)) {
+        return null;
+    }
+    const toMinutes = (value: string) => {
+        const [hours, minutes] = value.split(':').map(Number);
+        return hours * 60 + minutes;
+    };
+    let duration = toMinutes(nextArrival) - toMinutes(departure);
+    if (duration < 0) duration += 24 * 60;
+    return `${String(Math.floor(duration / 60)).padStart(2, '0')}:${String(duration % 60).padStart(2, '0')}`;
+}
+
 function filterTicketsInfo<T extends TicketInfo | InterlineInfo>(
     ticketsInfo: T[],
     trainFilterFlags: string,
@@ -1679,6 +1692,72 @@ interface TrainSearchResponse extends QueryResponse {
 }
 
 registerTool(
+    'get-train-operating-days',
+    '判断指定车次在指定日期是否有可查询的运行信息。',
+    {
+        trainCode: z.string().trim().min(1).describe('车次，例如 G1。'),
+        date: dateSchema.describe('查询日期，格式为 yyyy-MM-dd。'),
+    },
+    async ({ trainCode, date }) => {
+        const response = await make12306Request<TrainSearchResponse>(
+            `${SEARCH_API_BASE}/search/v1/train/search`,
+            new URLSearchParams({ keyword: trainCode, date: date.replaceAll('-', '') })
+        );
+        const matches = response?.data ?? [];
+        const result = {
+            trainCode,
+            date,
+            operating: matches.length > 0,
+            matchedTrain: matches[0]?.station_train_code ?? null,
+        };
+        return {
+            content: [{ type: 'text', text: result.operating ? `${trainCode} 在 ${date} 有运行信息。` : `${trainCode} 在 ${date} 未查询到运行信息。` }],
+            structuredContent: result,
+        };
+    }
+);
+
+registerTool(
+    'filter-tickets',
+    '对已经获取的车次结果进行本地二次筛选和排序，不访问 12306 上游。',
+    {
+        tickets: z.array(z.object({
+            trainCode: z.string(),
+            startTime: z.string(),
+            arriveTime: z.string(),
+            duration: z.string(),
+            fromStation: z.string().optional(),
+            toStation: z.string().optional(),
+            seats: z.array(z.object({ name: z.string(), available: z.string(), price: z.number().optional() })).default([]).optional(),
+        })).max(200).describe('来自 get-ticket-summary 或 get-tickets 结果的车次列表。'),
+        trainFilterFlags: z.string().regex(/^[GDZTKOFS]*$/).default('').optional(),
+        earliestStartTime: z.number().min(0).max(24).default(0).optional(),
+        latestStartTime: z.number().min(0).max(24).default(24).optional(),
+        sortFlag: sortSchema,
+        sortReverse: z.boolean().default(false).optional(),
+        limit: z.number().int().min(1).max(200).default(50).optional(),
+    },
+    async ({ tickets, trainFilterFlags, earliestStartTime, latestStartTime, sortFlag, sortReverse, limit }) => {
+        const filtered = tickets.filter((ticket) => {
+            const hour = Number(ticket.startTime.split(':')[0]);
+            const matchesTime =
+                hour >= (earliestStartTime ?? 0) &&
+                hour <= (latestStartTime ?? 24);
+            const matchesType = !trainFilterFlags || trainFilterFlags.includes(ticket.trainCode[0]);
+            return matchesTime && matchesType;
+        });
+        const sorted = [...filtered].sort((a, b) => {
+            if (sortFlag === 'duration') return a.duration.localeCompare(b.duration);
+            if (sortFlag === 'arriveTime') return a.arriveTime.localeCompare(b.arriveTime);
+            return a.startTime.localeCompare(b.startTime);
+        });
+        if (sortReverse) sorted.reverse();
+        const result = { tickets: sorted.slice(0, limit), total: sorted.length };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result };
+    }
+);
+
+registerTool(
     'get-train-route-stations',
     '查询特定列车车次在指定区间内的途径车站、到站时间、出发时间及停留时间等详细经停信息。当用户询问某趟具体列车的经停站时使用此接口。',
     {
@@ -1693,8 +1772,13 @@ registerTool(
             .describe(
                 '返回结果格式，默认为text，建议使用text。可选标志：[text, json]'
             ),
+        stationName: z
+            .string()
+            .trim()
+            .optional()
+            .describe('可选。指定车站名称时，结构化结果会标记该车站是否停靠。'),
     },
-    async ({ trainCode, departDate, format }) => {
+    async ({ trainCode, departDate, format, stationName }) => {
         await ensureInitialized();
         const searchParams = new URLSearchParams({
             keyword: trainCode,
@@ -1761,7 +1845,7 @@ registerTool(
                 content: [{ type: 'text', text: '未查询到相关车次信息。' }],
             };
         }
-        var formatedResult;
+        let formatedResult: string;
         switch (format) {
             case 'json':
                 formatedResult = JSON.stringify(routeStationsInfo);
@@ -1770,8 +1854,29 @@ registerTool(
                 formatedResult = formatRouteStationsInfo(routeStationsInfo);
                 break;
         }
+        const targetName = stationName?.replace(/站$/, '');
+        const structuredStations = routeStationsInfo.map((station, index, all) => ({
+            ...station,
+            stationIndex: index + 1,
+            isTargetStation: targetName
+                ? station.station_name.replace(/站$/, '') === targetName
+                : undefined,
+            stopDuration:
+                index < all.length - 1
+                    ? calculateStopDuration(
+                          station.start_time,
+                          all[index + 1].arrive_time
+                      )
+                    : null,
+        }));
         return {
             content: [{ type: 'text', text: formatedResult }],
+            structuredContent: {
+                trainCode: routeStationsInfo[0].station_train_code,
+                departDate,
+                stationName: stationName ?? null,
+                stations: structuredStations,
+            },
         };
     }
 );
