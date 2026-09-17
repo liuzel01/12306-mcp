@@ -1291,7 +1291,7 @@ registerTool(
             sortReverse,
             limitedNum
         );
-        var formatedResult;
+        let formatedResult: string;
         switch (format) {
             case 'csv':
                 formatedResult = formatTicketsInfoCSV(filteredTicketsInfo);
@@ -1310,6 +1310,14 @@ registerTool(
                     text: formatedResult,
                 },
             ],
+            structuredContent: {
+                date,
+                fromStation,
+                toStation,
+                trainFilterFlags,
+                queriedAt: new Date().toISOString(),
+                trains: filteredTicketsInfo,
+            },
         };
     }
 );
