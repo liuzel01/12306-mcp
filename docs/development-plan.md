@@ -73,7 +73,7 @@
 - 解析 fixture 测试：正常车次、无票、无座、跨日到达、字段缺失和空结果。
 - 结构化结果契约测试，确保字段名称和类型稳定。
 
-### P1：车站搜索接口
+### P2：车站搜索接口
 
 新增 MCP 工具：`search-stations`
 
@@ -89,7 +89,7 @@
 - 使用固定车站 fixture，测试不依赖实时 12306 网络。
 - 增加 MCP 工具 schema 和典型调用的契约测试。
 
-### P2：服务状态接口
+### P3：服务状态接口
 
 新增 MCP 工具：`get-service-status`
 
@@ -102,7 +102,7 @@
 - 覆盖启动未初始化、初始化成功、初始化失败、缓存命中和缓存过期。
 - 验证敏感字段不会出现在返回结果和日志中。
 
-### P2：小型相关接口扩展
+### P4：小型相关接口扩展
 
 在前述基础稳定后，按需求选择实现，不要求第一轮全部完成：
 
@@ -115,7 +115,7 @@
 
 ## 测试工程计划
 
-建议新增：
+后续单元测试会逐步新增。P0 第一阶段先加入 MCP 协议 smoke test，目录规划为：
 
 ```text
 tests/
@@ -133,18 +133,16 @@ tests/
     tool-contracts.test.ts
 ```
 
-建议增加 TypeScript 测试运行器（例如 `tsx`）作为开发依赖，并补充 npm scripts：
+当前已加入不依赖额外测试运行器的协议测试，并补充 npm scripts：
 
 ```json
 {
-  "test": "npm run build && npm run test:unit && npm run test:integration",
-  "test:unit": "tsx --test tests/unit/**/*.test.ts",
-  "test:integration": "tsx --test tests/integration/**/*.test.ts",
-  "test:mcp": "tsx --test tests/integration/mcp-protocol.test.ts"
+  "test": "npm run build && npm run test:mcp",
+  "test:mcp": "node --test tests/mcp-protocol.test.js"
 }
 ```
 
-如果最终采用其他 TypeScript 测试框架，应统一替换上述命令。CI 中执行构建、单元测试和 MCP 协议测试。实时 12306 查询只作为可选的 smoke test，不能作为默认 CI 测试依赖。
+后续增加 TypeScript 单元测试时，再引入统一的测试运行器并补充 `test:unit`、`test:integration`。CI 中执行构建和 MCP 协议测试；实时 12306 查询只作为可选的 smoke test，不能作为默认 CI 测试依赖。
 
 ## 推荐提交顺序
 
@@ -153,7 +151,7 @@ tests/
 3. P1 参数校验与 `get-tickets` 结构化结果。
 4. `search-stations` 及其测试。
 5. `get-service-status` 及其测试。
-6. 根据实际需求选择 P2 小接口扩展。
+6. 根据实际需求选择 P4 小接口扩展。
 
 ## 完成标准
 

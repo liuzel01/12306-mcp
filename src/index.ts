@@ -30,8 +30,6 @@ const SEARCH_API_BASE = 'https://search.12306.cn';
 const WEB_URL = 'https://www.12306.cn/index/';
 const LCQUERY_INIT_URL = 'https://kyfw.12306.cn/otn/lcQuery/init';
 const TICKETS_QUERY_INIT_URL = 'https://kyfw.12306.cn/otn/leftTicket/init';
-const LCQUERY_PATH = await getLCQueryPath();
-const TICKETS_QUERY_PATH = await getTicketQueryPath();
 const MISSING_STATIONS: StationData[] = [
     {
         station_id: '@cdd',
@@ -46,64 +44,21 @@ const MISSING_STATIONS: StationData[] = [
         r2: '',
     },
 ];
-const STATIONS: Record<string, StationData> = await getStations(); //以Code为键
-const CITY_STATIONS: Record<
+let STATIONS: Record<string, StationData> = {}; //以Code为键
+let CITY_STATIONS: Record<
     string,
     { station_code: string; station_name: string }[]
-> = (() => {
-    const result: Record<
-        string,
-        { station_code: string; station_name: string }[]
-    > = {};
-    for (const station of Object.values(STATIONS)) {
-        const city = station.city;
-        if (!result[city]) {
-            result[city] = [];
-        }
-        result[city].push({
-            station_code: station.station_code,
-            station_name: station.station_name,
-        });
-    }
-    return result;
-})(); //以城市名名为键，位于该城市的的所有Station列表的记录
+> = {}; //以城市名名为键，位于该城市的的所有Station列表的记录
 
-const CITY_CODES: Record<
+let CITY_CODES: Record<
     string,
     { station_code: string; station_name: string }
-> = (() => {
-    const result: Record<
-        string,
-        { station_code: string; station_name: string }
-    > = {};
-    for (const [city, stations] of Object.entries(CITY_STATIONS)) {
-        for (const station of stations) {
-            if (station.station_name == city) {
-                result[city] = station;
-                break;
-            }
-        }
-    }
-    return result;
-})(); //以城市名名为键的Station记录
+> = {}; //以城市名名为键的Station记录
 
-const NAME_STATIONS: Record<
+let NAME_STATIONS: Record<
     string,
     { station_code: string; station_name: string }
-> = (() => {
-    const result: Record<
-        string,
-        { station_code: string; station_name: string }
-    > = {};
-    for (const station of Object.values(STATIONS)) {
-        const station_name = station.station_name;
-        result[station_name] = {
-            station_code: station.station_code,
-            station_name: station.station_name,
-        };
-    }
-    return result;
-})(); //以车站名为键的Station记录
+> = {}; //以车站名为键的Station记录
 
 const SEAT_SHORT_TYPES = {
     swz: '商务座',
@@ -152,6 +107,51 @@ const DW_FLAGS = [
     '支持选铺',
     '老年优惠',
 ];
+
+let lcQueryPath: string | null = null;
+let ticketsQueryPath: string | null = null;
+let initializationPromise: Promise<void> | null = null;
+let initializedAt = 0;
+const INITIALIZATION_TTL_MS = 30 * 60 * 1000;
+
+function rebuildStationIndexes(): void {
+    const cityStations: Record<
+        string,
+        { station_code: string; station_name: string }[]
+    > = {};
+    const cityCodes: Record<
+        string,
+        { station_code: string; station_name: string }
+    > = {};
+    const nameStations: Record<
+        string,
+        { station_code: string; station_name: string }
+    > = {};
+
+    for (const station of Object.values(STATIONS)) {
+        const city = station.city;
+        cityStations[city] ??= [];
+        cityStations[city].push({
+            station_code: station.station_code,
+            station_name: station.station_name,
+        });
+        nameStations[station.station_name] = {
+            station_code: station.station_code,
+            station_name: station.station_name,
+        };
+    }
+
+    for (const [city, stations] of Object.entries(cityStations)) {
+        const cityStation = stations.find(
+            (station) => station.station_name === city
+        );
+        if (cityStation) cityCodes[city] = cityStation;
+    }
+
+    CITY_STATIONS = cityStations;
+    CITY_CODES = cityCodes;
+    NAME_STATIONS = nameStations;
+}
 
 const TRAIN_FILTERS = {
     //G(高铁/城际),D(动车),Z(直达特快),T(特快),K(快速),O(其他),F(复兴号),S(智能动车组)
@@ -282,7 +282,9 @@ function formatCookies(cookies: Record<string, string>): string {
 async function getCookie() {
     const url = `${API_BASE}/otn/leftTicket/init`;
     try {
-        const response = await fetch(url);
+        const response = await fetch(url, {
+            signal: AbortSignal.timeout(10_000),
+        });
         const setCookieHeader = response.headers.getSetCookie();
         if (setCookieHeader) {
             return parseCookies(setCookieHeader);
@@ -779,14 +781,69 @@ async function make12306Request<T>(
     scheme: URLSearchParams = new URLSearchParams(),
     headers: Record<string, string> = {}
 ): Promise<T | null> {
+    const requestUrl = `${url.toString()}?${scheme.toString()}`;
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+            const response = await axios.get(requestUrl, {
+                headers,
+                timeout: 10_000,
+                validateStatus: (status) => status >= 200 && status < 300,
+            });
+            return response.data as T;
+        } catch (error) {
+            const retryable =
+                axios.isAxiosError(error) &&
+                (error.code === 'ECONNABORTED' ||
+                    error.code === 'ETIMEDOUT' ||
+                    !error.response ||
+                    error.response.status >= 500);
+            if (!retryable || attempt === maxAttempts) {
+                const reason = axios.isAxiosError(error)
+                    ? error.code ?? `HTTP_${error.response?.status ?? 'ERROR'}`
+                    : 'UNKNOWN_ERROR';
+                console.error(`12306 request failed (${reason})`, {
+                    url: new URL(requestUrl).pathname,
+                    attempt,
+                });
+                return null;
+            }
+            await new Promise((resolve) =>
+                setTimeout(resolve, 250 * 2 ** (attempt - 1))
+            );
+        }
+    }
+    return null;
+}
+
+async function ensureInitialized(): Promise<void> {
+    if (
+        initializationPromise &&
+        (initializedAt === 0 || Date.now() - initializedAt < INITIALIZATION_TTL_MS)
+    ) {
+        return initializationPromise;
+    }
+
+    initializationPromise = (async () => {
+        const [stations, loadedLCQueryPath, loadedTicketsQueryPath] =
+            await Promise.all([
+                getStations(),
+                getLCQueryPath(),
+                getTicketQueryPath(),
+            ]);
+        STATIONS = stations;
+        lcQueryPath = loadedLCQueryPath;
+        ticketsQueryPath = loadedTicketsQueryPath;
+        rebuildStationIndexes();
+        initializedAt = Date.now();
+    })();
+
     try {
-        const response = await axios.get(url + '?' + scheme.toString(), {
-            headers: headers,
-        });
-        return (await response.data) as T;
+        await initializationPromise;
     } catch (error) {
-        console.error('Error making 12306 request:', error);
-        return null;
+        initializationPromise = null;
+        initializedAt = 0;
+        throw error;
     }
 }
 
@@ -878,6 +935,7 @@ registerTool(
         city: z.string().describe('中文城市名称，例如："北京", "上海"'),
     },
     async ({ city }) => {
+        await ensureInitialized();
         if (!(city in CITY_STATIONS)) {
             return {
                 content: [{ type: 'text', text: 'Error: City not found. ' }],
@@ -902,6 +960,7 @@ registerTool(
             ),
     },
     async ({ citys }) => {
+        await ensureInitialized();
         let result: Record<string, object> = {};
         for (const city of citys.split('|')) {
             if (!(city in CITY_CODES)) {
@@ -927,6 +986,7 @@ registerTool(
             ),
     },
     async ({ stationNames }) => {
+        await ensureInitialized();
         let result: Record<string, object> = {};
         for (let stationName of stationNames.split('|')) {
             stationName = stationName.endsWith('站')
@@ -953,6 +1013,7 @@ registerTool(
             .describe('车站的 `station_telecode` (3位字母编码)'),
     },
     async ({ stationTelecode }) => {
+        await ensureInitialized();
         if (!STATIONS[stationTelecode]) {
             return {
                 content: [{ type: 'text', text: 'Error: Station not found. ' }],
@@ -1053,6 +1114,7 @@ registerTool(
         limitedNum,
         format,
     }) => {
+        await ensureInitialized();
         // 检查日期是否早于当前日期
         if (!checkDate(date)) {
             return {
@@ -1084,7 +1146,7 @@ registerTool(
             'leftTicketDTO.to_station': toStation,
             purpose_codes: 'ADULT',
         });
-        const queryUrl = `${API_BASE}/otn/${TICKETS_QUERY_PATH}`;
+        const queryUrl = `${API_BASE}/otn/${ticketsQueryPath!}`;
         const cookies = await getCookie();
         if (cookies == null || Object.entries(cookies).length === 0) {
             return {
@@ -1280,6 +1342,7 @@ registerTool(
         limitedNum,
         format,
     }) => {
+        await ensureInitialized();
         // 检查日期是否早于当前日期
         if (!checkDate(date)) {
             return {
@@ -1311,7 +1374,7 @@ registerTool(
         fromStation = fromStationResult;
         toStation = toStationResult;
         middleStation = middleStationResult ? middleStationResult : '';
-        const queryUrl = `${API_BASE}${LCQUERY_PATH}`;
+        const queryUrl = `${API_BASE}${lcQueryPath!}`;
         const cookies = await getCookie();
         if (cookies == null || Object.entries(cookies).length === 0) {
             return {
@@ -1457,6 +1520,7 @@ registerTool(
             ),
     },
     async ({ trainCode, departDate, format }) => {
+        await ensureInitialized();
         const searchParams = new URLSearchParams({
             keyword: trainCode,
             date: departDate.replaceAll('-', ''),
