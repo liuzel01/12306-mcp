@@ -55,6 +55,8 @@ test('MCP starts before upstream initialization and exposes tools', async (t) =>
     assert.ok(tools.result.tools.some((tool) => tool.name === 'search-stations'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'get-service-status'));
     assert.ok(tools.result.tools.some((tool) => tool.name === 'get-ticket-summary'));
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'get-train-operating-days'));
+    assert.ok(tools.result.tools.some((tool) => tool.name === 'filter-tickets'));
 
     const status = await callMcp('tools/call', 3, {
         name: 'get-service-status',
@@ -67,4 +69,18 @@ test('MCP starts before upstream initialization and exposes tools', async (t) =>
         arguments: {},
     });
     assert.match(currentDate.result.content[0].text, /^\d{4}-\d{2}-\d{2}$/);
+
+    const filtered = await callMcp('tools/call', 5, {
+        name: 'filter-tickets',
+        arguments: {
+            tickets: [
+                { trainCode: 'G1', startTime: '06:30', arriveTime: '11:24', duration: '04:54' },
+                { trainCode: 'K1', startTime: '08:00', arriveTime: '20:00', duration: '12:00' },
+            ],
+            trainFilterFlags: 'G',
+            limit: 5,
+        },
+    });
+    assert.equal(filtered.result.structuredContent.total, 1);
+    assert.equal(filtered.result.structuredContent.tickets[0].trainCode, 'G1');
 });

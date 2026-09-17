@@ -16,9 +16,9 @@
 - [x] P1：日期/排序/格式参数校验，`get-tickets` 结构化结果。
 - [x] P2：`search-stations` 模糊搜索接口。
 - [x] P3：`get-service-status` 状态接口。
-- [x] P4：已实现 `get-ticket-summary`；其他小型接口仍按需求选择。
+- [x] P4：已实现 `get-ticket-summary`、`get-train-operating-days`、增强版 `get-train-route-stations` 和 `filter-tickets`。
 
-自动化验证：`npm test` 已通过；该测试覆盖 MCP 启动、初始化、工具发现、状态接口、日期工具和 `get-ticket-summary` 工具发现。`get-ticket-summary` 已额外通过真实 12306 上游 smoke test（北京至上海高铁）。
+自动化验证：`npm test` 已通过；该测试覆盖 MCP 启动、初始化、工具发现、状态接口、日期工具和本地 `filter-tickets` fixture。`get-ticket-summary` 已通过真实 12306 上游 smoke test（北京至上海高铁）；运行判断和经停站接口需在真实车次/日期下进行可选 smoke test。
 
 ## 当前基线观察
 
@@ -163,7 +163,7 @@ tests/
 3. P1 参数校验与 `get-tickets` 结构化结果。
 4. `search-stations` 及其测试。
 5. `get-service-status` 及其测试。
-6. 根据实际需求选择 P4 小接口扩展。
+6. P4 小接口扩展：运行判断、经停站增强和本地二次筛选。
 
 ## 完成标准
 
