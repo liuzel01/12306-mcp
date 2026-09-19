@@ -495,6 +495,19 @@ function formatRouteStationsInfo(
     return result;
 }
 
+function calculateStopDuration(departure: string, nextArrival: string): string | null {
+    if (!/^\d{2}:\d{2}$/.test(departure) || !/^\d{2}:\d{2}$/.test(nextArrival)) {
+        return null;
+    }
+    const minutes = (value: string) => {
+        const [hours, mins] = value.split(':').map(Number);
+        return hours * 60 + mins;
+    };
+    let duration = minutes(nextArrival) - minutes(departure);
+    if (duration < 0) duration += 24 * 60;
+    return `${String(Math.floor(duration / 60)).padStart(2, '0')}:${String(duration % 60).padStart(2, '0')}`;
+}
+
 function filterTicketsInfo<T extends TicketInfo | InterlineInfo>(
     ticketsInfo: T[],
     trainFilterFlags: string,
@@ -1433,6 +1446,72 @@ interface TrainSearchResponse extends QueryResponse {
     data: TrainSearchData[];
     errorMsg: string;
 }
+
+async function queryTrainSchedule(
+    trainCode: string,
+    departDate: string
+): Promise<RouteStationInfo[] | null> {
+    const searchResponse = await make12306Request<TrainSearchResponse>(
+        `${SEARCH_API_BASE}/search/v1/train/search`,
+        new URLSearchParams({
+            keyword: trainCode,
+            date: departDate.replaceAll('-', ''),
+        })
+    );
+    if (!searchResponse?.data?.length) return null;
+
+    const searchData = searchResponse.data[0];
+    const cookies = await getCookie();
+    if (!cookies || Object.keys(cookies).length === 0) return null;
+    const queryResponse = await make12306Request<RouteQueryResponse>(
+        `${API_BASE}/otn/queryTrainInfo/query`,
+        new URLSearchParams({
+            'leftTicketDTO.train_no': searchData.train_no,
+            'leftTicketDTO.train_date': departDate,
+            rand_code: '',
+        }),
+        { Cookie: formatCookies(cookies) }
+    );
+    if (!queryResponse?.data?.data) return null;
+    const stations = parseRouteStationsInfo(queryResponse.data.data);
+    return stations.length > 0 ? stations : null;
+}
+
+registerTool(
+    'get-train-schedule',
+    '查询指定车次在指定日期的完整计划时刻表，包括始发站、终到站、经停站、到达时间、出发时间和停留时长。',
+    {
+        trainCode: z.string().trim().min(1).describe('车次，例如 G1。'),
+        departDate: z
+            .string()
+            .regex(/^\d{4}-\d{2}-\d{2}$/)
+            .describe('列车出发日期，格式为 yyyy-MM-dd。'),
+        stationName: z.string().trim().optional().describe('可选，指定车站时标记该站是否经停。'),
+    },
+    async ({ trainCode, departDate, stationName }) => {
+        const routeStationsInfo = await queryTrainSchedule(trainCode, departDate);
+        if (!routeStationsInfo) {
+            return { content: [{ type: 'text', text: '很抱歉，未查询到对应车次时刻表。' }] };
+        }
+        const target = stationName?.replace(/站$/, '');
+        const stations = routeStationsInfo.map((station, index, all) => ({
+            ...station,
+            stationIndex: index + 1,
+            isTargetStation: target
+                ? station.station_name.replace(/站$/, '') === target
+                : undefined,
+            stopDuration:
+                index < all.length - 1
+                    ? calculateStopDuration(station.start_time, all[index + 1].arrive_time)
+                    : null,
+        }));
+        const result = { trainCode, departDate, stationName: stationName ?? null, stations };
+        return {
+            content: [{ type: 'text', text: formatRouteStationsInfo(routeStationsInfo) }],
+            structuredContent: result,
+        };
+    }
+);
 
 registerTool(
     'get-train-route-stations',
