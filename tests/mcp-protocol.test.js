@@ -47,6 +47,7 @@ test('MCP protocol exposes train schedule query', async (t) => {
     const routeStationsTool = tools.result.tools.find((tool) => tool.name === 'get-train-route-stations');
     assert.ok(scheduleTool);
     assert.ok(tools.result.tools.some((tool) => tool.name === 'get-train-on-time-status'));
-    assert.match(scheduleTool.description, /时刻表首选接口/);
+    assert.match(scheduleTool.description, /指定车次时刻表接口/);
+    assert.match(scheduleTool.description, /路线级车次列表/);
     assert.match(routeStationsTool.description, /不要使用本工具/);
 });
