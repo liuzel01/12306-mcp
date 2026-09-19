@@ -43,6 +43,10 @@ test('MCP protocol exposes train schedule query', async (t) => {
     assert.equal(initialized.result.serverInfo.name, '12306-mcp');
 
     const tools = await callMcp('tools/list', 2);
-    assert.ok(tools.result.tools.some((tool) => tool.name === 'get-train-schedule'));
+    const scheduleTool = tools.result.tools.find((tool) => tool.name === 'get-train-schedule');
+    const routeStationsTool = tools.result.tools.find((tool) => tool.name === 'get-train-route-stations');
+    assert.ok(scheduleTool);
     assert.ok(tools.result.tools.some((tool) => tool.name === 'get-train-on-time-status'));
+    assert.match(scheduleTool.description, /时刻表首选接口/);
+    assert.match(routeStationsTool.description, /不要使用本工具/);
 });
