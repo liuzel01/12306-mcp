@@ -803,6 +803,26 @@ async function make12306Request<T>(
     }
 }
 
+async function make12306PostRequest<T>(
+    url: string,
+    form: URLSearchParams,
+    headers: Record<string, string> = {}
+): Promise<T | null> {
+    try {
+        const response = await axios.post(url, form.toString(), {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                ...headers,
+            },
+            timeout: 10_000,
+        });
+        return response.data as T;
+    } catch (error) {
+        console.error('Error making 12306 POST request:', error);
+        return null;
+    }
+}
+
 function createServer(): McpServer {
     return new McpServer(
         {
@@ -1446,6 +1466,70 @@ interface TrainSearchResponse extends QueryResponse {
     data: TrainSearchData[];
     errorMsg: string;
 }
+
+interface OnTimeQueryResponse {
+    status: boolean;
+    data?: {
+        result?: string;
+        flag?: boolean;
+        message?: string;
+    };
+    message?: string;
+}
+
+function classifyOnTimeResult(result: string): 'on_time' | 'delayed' | 'unknown' {
+    const text = result.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (/晚点|延误/.test(text)) return 'delayed';
+    if (/正点|准点/.test(text)) return 'on_time';
+    return 'unknown';
+}
+
+registerTool(
+    'get-train-on-time-status',
+    '查询未来约3小时内指定车站和车次的正晚点信息。结果仅供参考，准确信息以车站公告为准。',
+    {
+        stationName: z.string().trim().min(1).describe('查询车站，例如北京南。'),
+        trainCode: z.string().trim().min(1).describe('车次，例如 G1。'),
+        queryType: z
+            .enum(['arrival', 'departure'])
+            .default('departure')
+            .optional()
+            .describe('查询到达或出发正晚点，默认为 departure。'),
+    },
+    async ({ stationName, trainCode, queryType }) => {
+        const cookies = await getCookie();
+        const response = await make12306PostRequest<OnTimeQueryResponse>(
+            `${API_BASE}/otn/zwdch/query`,
+            new URLSearchParams({
+                cxlx: queryType === 'arrival' ? '0' : '1',
+                cz: stationName,
+                cc: trainCode,
+                czEn: encodeURIComponent(stationName).replace(/%/g, '-'),
+                randCode: '',
+            }),
+            cookies ? { Cookie: formatCookies(cookies) } : undefined
+        );
+        const rawResult = response?.data?.result ?? response?.data?.message ?? response?.message ?? '';
+        const result = {
+            stationName,
+            trainCode,
+            queryType: queryType ?? 'departure',
+            status: response?.status ? classifyOnTimeResult(rawResult) : 'unknown',
+            providerResult: response?.data?.result ?? null,
+            providerFlag: response?.data?.flag ?? null,
+            rawMessage:
+                response?.data?.message?.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() ||
+                rawResult.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() ||
+                null,
+            checkedAt: new Date().toISOString(),
+            limitation: '官方查询仅提供未来约3小时信息，结果仅供参考。',
+        };
+        return {
+            content: [{ type: 'text', text: JSON.stringify(result) }],
+            structuredContent: result,
+        };
+    }
+);
 
 async function queryTrainSchedule(
     trainCode: string,
